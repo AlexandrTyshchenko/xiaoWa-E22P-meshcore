@@ -139,6 +139,12 @@ bool CommonRadioPrefs::handleCommand(const char* command, uint32_t sender_timest
     return true;
   }
   if (memcmp(command, "set tx ", 7) == 0) {
+  #ifdef LORA_TX_POWER_MAX
+    if (atoi(&command[7]) > LORA_TX_POWER_MAX) {
+      sprintf(reply, "Error, max is %d", LORA_TX_POWER_MAX);
+      return true;
+    }
+  #endif
     setTxPower(atoi(&command[7]));
     radio_driver.setTxPower(getTxPower());
     strcpy(reply, "OK");

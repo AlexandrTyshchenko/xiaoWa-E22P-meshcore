@@ -48,6 +48,9 @@ uint32_t RadioLibWrapper::getRngSeed() {
 }
 
 void RadioLibWrapper::setTxPower(int8_t dbm) {
+#ifdef LORA_TX_POWER_MAX
+  if (dbm > LORA_TX_POWER_MAX) dbm = LORA_TX_POWER_MAX;  // protect an external PA from overdrive
+#endif
 #if defined(USE_LR2021)
   idle();
 #endif

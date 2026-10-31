@@ -98,6 +98,9 @@ void CommonCLI::loadPrefs(FILESYSTEM* fs) {
   //    fs->remove("/com_prefs");  // remove old
     }
   }
+#ifdef LORA_TX_POWER_MAX
+  if (_prefs->tx_power_dbm > LORA_TX_POWER_MAX) _prefs->tx_power_dbm = LORA_TX_POWER_MAX;  // saved by a firmware without the cap
+#endif
 }
 
 void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {  // Legacy prefs loader
