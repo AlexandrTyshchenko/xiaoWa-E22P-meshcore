@@ -1,6 +1,6 @@
 # xiaoWa E22P — FakeSolar з модулем Ebyte E22P-433M30S
 
-Та сама плата й сенсори, що й FakeSolar (Faketec / ProMicro nRF52840, AHT20, BMP280, INA3221 @0x42, PCF8563, GPS 38400, захист GPS від спуфінгу). Інший радіомодуль: **E22P-433M30S** (SX1268 + PA + LNA, до 30 dBm) замість E22-400M22S.
+Та сама плата й сенсори, що й FakeSolar (Faketec / ProMicro nRF52840, AHT20, BMP280 або BME280, INA3221 @0x42, PCF8563, GPS 38400, захист GPS від спуфінгу). Інший радіомодуль: **E22P-433M30S** (SX1268 + PA + LNA, до 30 dBm) замість E22-400M22S.
 
 Відмінності цієї плати від FakeSolar:
 - INA3221 @0x42: шунти 0.1 / 0.04 / 0.04 Ом (як у FakeSolar), батарея на CH2;
