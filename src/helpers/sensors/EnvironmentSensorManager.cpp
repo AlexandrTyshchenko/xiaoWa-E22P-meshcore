@@ -1,14 +1,20 @@
 #include "EnvironmentSensorManager.h"
 
 #include <Wire.h>
-#if ENV_INCLUDE_GPS && defined(GPS_GUARD)
-#include <RTClib.h>
-#endif
 
 #if ENV_PIN_SDA && ENV_PIN_SCL
 #define TELEM_WIRE &Wire1  // Use Wire1 as the I2C bus for Environment Sensors
 #else
 #define TELEM_WIRE &Wire  // Use default I2C bus for Environment Sensors
+#endif
+
+// TELEM_NO_ALTITUDE: leave the barometric altitude out of the telemetry (it is derived from the
+// standard sea level pressure). Some clients stop parsing Cayenne LPP at an unknown type, so a
+// record they do not decode hides every sensor after it.
+#ifdef TELEM_NO_ALTITUDE
+  #define LPP_ADD_ALTITUDE(lpp, ch, value)
+#else
+  #define LPP_ADD_ALTITUDE(lpp, ch, value)  (lpp).addAltitude(ch, value)
 #endif
 
 // ============================================================
@@ -100,8 +106,11 @@ LPS22HBClass LPS22HB(*TELEM_WIRE);
 #endif
 
 #if ENV_INCLUDE_INA3221
-#ifndef TELEM_INA3221_ADDRESS
-#define TELEM_INA3221_ADDRESS     0x42    // INA3221 3 channel current sensor I2C address
+#ifdef TELEM_INA3221_ADDRESS
+  #define TELEM_INA3221_PROBE_ALL 0     // address pinned by the variant
+#else
+  #define TELEM_INA3221_ADDRESS   0x42  // INA3221 3 channel current sensor I2C address (A0 = SDA)
+  #define TELEM_INA3221_PROBE_ALL 1     // also try the other A0 straps: 0x40 (GND), 0x41 (VS), 0x43 (SCL)
 #endif
 #ifndef TELEM_INA3221_SHUNT_VALUE
 #define TELEM_INA3221_SHUNT_VALUE 0.100 // most variants will have a 0.1 ohm shunts
@@ -109,7 +118,7 @@ LPS22HBClass LPS22HB(*TELEM_WIRE);
 #ifndef TELEM_INA3221_NUM_CHANNELS
 #define TELEM_INA3221_NUM_CHANNELS 3
 #endif
-// optional per-channel shunt values (ohms), default to TELEM_INA3221_SHUNT_VALUE
+// Optional per-channel shunt values (ohms); default to TELEM_INA3221_SHUNT_VALUE.
 #ifndef TELEM_INA3221_SHUNT_CH1
 #define TELEM_INA3221_SHUNT_CH1 TELEM_INA3221_SHUNT_VALUE
 #endif
@@ -121,7 +130,6 @@ LPS22HBClass LPS22HB(*TELEM_WIRE);
 #endif
 #include <Adafruit_INA3221.h>
 static Adafruit_INA3221 INA3221;
-static bool ina3221_ready = false;
 static const float INA3221_SHUNTS[3] = { TELEM_INA3221_SHUNT_CH1, TELEM_INA3221_SHUNT_CH2, TELEM_INA3221_SHUNT_CH3 };
 #endif
 
@@ -173,56 +181,6 @@ static Adafruit_VL53L0X VL53L0X;
 #endif
 #include "RAK12035_SoilMoisture.h"
 static RAK12035_SoilMoisture RAK12035;
-#endif
-
-#if ENV_INCLUDE_GPS && defined(RAK_BOARD) && !defined(RAK_WISMESH_TAG)
-#define RAK_WISBLOCK_GPS
-#endif
-
-#ifdef RAK_WISBLOCK_GPS
-static uint32_t gpsResetPin = 0;
-static bool i2cGPSFlag = false;
-static bool serialGPSFlag = false;
-#ifndef TELEM_RAK12500_ADDRESS
-#define TELEM_RAK12500_ADDRESS   0x42     //RAK12500 Ublox GPS via i2c
-#endif
-#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
-static SFE_UBLOX_GNSS ublox_GNSS;
-
-class RAK12500LocationProvider : public LocationProvider {
-  long _lat = 0;
-  long _lng = 0;
-  long _alt = 0;
-  int _sats = 0;
-  long _epoch = 0;
-  bool _fix = false;
-public:
-  long getLatitude() override { return _lat; }
-  long getLongitude() override { return _lng; }
-  long getAltitude() override { return _alt; }
-  long satellitesCount() override { return _sats; }
-  bool isValid() override { return _fix; }
-  long getTimestamp() override { return _epoch; }
-  void sendSentence(const char * sentence) override { }
-  void reset() override { }
-  void begin() override { }
-  void stop() override { }
-  void loop() override {
-    if (ublox_GNSS.getGnssFixOk(8)) {
-      _fix = true;
-      _lat = ublox_GNSS.getLatitude(2) / 10;
-      _lng = ublox_GNSS.getLongitude(2) / 10;
-      _alt = ublox_GNSS.getAltitude(2);
-      _sats = ublox_GNSS.getSIV(2);
-    } else {
-      _fix = false;
-    }
-    _epoch = ublox_GNSS.getUnixEpoch(2);
-  }
-  bool isEnabled() override { return true; }
-};
-
-static RAK12500LocationProvider RAK12500_provider;
 #endif
 
 // ============================================================
@@ -278,7 +236,7 @@ static void query_bme680(uint8_t ch, uint8_t, CayenneLPP& lpp) {
     lpp.addRelativeHumidity(ch, BME680.humidity);
     const float pressure_hpa = BME680.pressure / 100.0f;
     lpp.addBarometricPressure(ch, pressure_hpa);
-    lpp.addAltitude(ch, 44330.0f * (1.0f - powf(pressure_hpa / (float)TELEM_BME680_SEALEVELPRESSURE_HPA, 0.1903f)));
+    LPP_ADD_ALTITUDE(lpp, ch, 44330.0f * (1.0f - powf(pressure_hpa / (float)TELEM_BME680_SEALEVELPRESSURE_HPA, 0.1903f)));
     lpp.addGenericSensor(ch, BME680.gas_resistance);
   }
 }
@@ -300,7 +258,7 @@ static void query_bme280(uint8_t ch, uint8_t, CayenneLPP& lpp) {
     lpp.addTemperature(ch, BME280.readTemperature());
     lpp.addRelativeHumidity(ch, BME280.readHumidity());
     lpp.addBarometricPressure(ch, BME280.readPressure() / 100);
-    lpp.addAltitude(ch, BME280.readAltitude(TELEM_BME280_SEALEVELPRESSURE_HPA));
+    LPP_ADD_ALTITUDE(lpp, ch, BME280.readAltitude(TELEM_BME280_SEALEVELPRESSURE_HPA));
   }
 }
 #endif
@@ -313,7 +271,7 @@ static uint8_t init_bmp280(TwoWire*, uint8_t addr) {
 static void query_bmp280(uint8_t ch, uint8_t, CayenneLPP& lpp) {
   lpp.addTemperature(ch, BMP280.readTemperature());
   lpp.addBarometricPressure(ch, BMP280.readPressure() / 100);
-  lpp.addAltitude(ch, BMP280.readAltitude(TELEM_BMP280_SEALEVELPRESSURE_HPA));
+  LPP_ADD_ALTITUDE(lpp, ch, BMP280.readAltitude(TELEM_BMP280_SEALEVELPRESSURE_HPA));
 }
 #endif
 
@@ -359,17 +317,19 @@ static void query_lps22hb(uint8_t ch, uint8_t, CayenneLPP& lpp) {
 #endif
 
 #if ENV_INCLUDE_INA3221
+static bool ina3221_ready = false;   // set once init_ina3221() succeeded
+
 static uint8_t init_ina3221(TwoWire* wire, uint8_t addr) {
   if (!INA3221.begin(addr, wire)) return 0;
   for (int i = 0; i < TELEM_INA3221_NUM_CHANNELS; i++) {
     INA3221.setShuntResistance(i, INA3221_SHUNTS[i]);
   }
-  ina3221_ready = true;
   // Each enabled hardware channel becomes its own telemetry channel.
   uint8_t enabled = 0;
   for (int i = 0; i < TELEM_INA3221_NUM_CHANNELS; i++) {
     if (INA3221.isChannelEnabled(i)) enabled++;
   }
+  ina3221_ready = true;
   return enabled > 0 ? enabled : 1;
 }
 static void query_ina3221(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
@@ -391,8 +351,7 @@ static void query_ina3221(uint8_t ch, uint8_t sub_ch, CayenneLPP& lpp) {
 }
 
 #ifdef TELEM_INA3221_BAT_CH
-// Battery monitoring via INA3221 channel TELEM_INA3221_BAT_CH (1..3), used by the board.
-bool ina3221_read_battery(uint16_t* millivolts, float* amps) {
+bool ina3221ReadBattery(uint16_t* millivolts, float* amps) {
   if (!ina3221_ready) return false;
   const int i = TELEM_INA3221_BAT_CH - 1;
   if (millivolts) *millivolts = (uint16_t)(INA3221.getBusVoltage(i) * 1000.0f);
@@ -403,14 +362,17 @@ bool ina3221_read_battery(uint16_t* millivolts, float* amps) {
 #endif
 
 #if ENV_INCLUDE_INA219
-static uint8_t init_ina219(TwoWire* wire, uint8_t) {
-  // INA219 static instance was constructed with the address; begin() uses it.
-  return INA219.begin(wire) ? 1 : 0;
+static Adafruit_INA219 INA219_ALT((TELEM_INA219_ADDRESS == 0x40) ? 0x41 : 0x40);
+static Adafruit_INA219* active_ina219 = &INA219;
+
+static uint8_t init_ina219(TwoWire* wire, uint8_t addr) {
+  active_ina219 = (addr == TELEM_INA219_ADDRESS) ? &INA219 : &INA219_ALT;
+  return active_ina219->begin(wire) ? 1 : 0;
 }
 static void query_ina219(uint8_t ch, uint8_t, CayenneLPP& lpp) {
-  lpp.addVoltage(ch, INA219.getBusVoltage_V());
-  lpp.addCurrent(ch, INA219.getCurrent_mA() / 1000.0f);
-  lpp.addPower(ch, INA219.getPower_mW() / 1000.0f);
+  lpp.addVoltage(ch, active_ina219->getBusVoltage_V());
+  lpp.addCurrent(ch, active_ina219->getCurrent_mA() / 1000.0f);
+  lpp.addPower(ch, active_ina219->getPower_mW() / 1000.0f);
 }
 #endif
 
@@ -469,7 +431,7 @@ static uint8_t init_bmp085(TwoWire* wire, uint8_t) {
 static void query_bmp085(uint8_t ch, uint8_t, CayenneLPP& lpp) {
   lpp.addTemperature(ch, BMP085.readTemperature());
   lpp.addBarometricPressure(ch, BMP085.readPressure() / 100);
-  lpp.addAltitude(ch, BMP085.readAltitude(TELEM_BMP085_SEALEVELPRESSURE_HPA * 100));
+  LPP_ADD_ALTITUDE(lpp, ch, BMP085.readAltitude(TELEM_BMP085_SEALEVELPRESSURE_HPA * 100));
 }
 #endif
 
@@ -553,7 +515,7 @@ static void query_bme680_bsec(uint8_t ch, uint8_t, CayenneLPP& lpp) {
   lpp.addTemperature(ch, bsec_temperature);
   lpp.addRelativeHumidity(ch, bsec_humidity);
   lpp.addBarometricPressure(ch, bsec_pressure_hpa);
-  lpp.addAltitude(ch, 44330.0f * (1.0f - powf(bsec_pressure_hpa / (float)TELEM_BME680_SEALEVELPRESSURE_HPA, 0.1903f)));
+  LPP_ADD_ALTITUDE(lpp, ch, 44330.0f * (1.0f - powf(bsec_pressure_hpa / (float)TELEM_BME680_SEALEVELPRESSURE_HPA, 0.1903f)));
   lpp.addGenericSensor(ch, (uint16_t)bsec_iaq_val);
   lpp.addAnalogInput(ch, (float)bsec_accuracy);
 }
@@ -582,6 +544,7 @@ struct SensorDef {
 };
 
 #define TELEM_BOSCH_ALT_ADDR(addr) ((uint8_t)((addr) == 0x76 ? 0x77 : 0x76))
+#define TELEM_INA219_ALT_ADDR(addr) ((uint8_t)((addr) == 0x40 ? 0x41 : 0x40))
 
 static const SensorDef SENSOR_TABLE[] = {
 #if ENV_INCLUDE_AHTX0
@@ -613,10 +576,18 @@ static const SensorDef SENSOR_TABLE[] = {
   { 0x5C,                  "LPS22HB",      init_lps22hb,  query_lps22hb  },
 #endif
 #if ENV_INCLUDE_INA3221
+  // Listed before INA219/INA260/INA226, which share 0x40-0x41. The INA3221 driver checks the
+  // manufacturer/die ID, so another chip at these addresses is left for its own driver.
   { TELEM_INA3221_ADDRESS, "INA3221",      init_ina3221,  query_ina3221  },
+#if TELEM_INA3221_PROBE_ALL
+  { 0x40,                  "INA3221",      init_ina3221,  query_ina3221  },
+  { 0x41,                  "INA3221",      init_ina3221,  query_ina3221  },
+  { 0x43,                  "INA3221",      init_ina3221,  query_ina3221  },
+#endif
 #endif
 #if ENV_INCLUDE_INA219
   { TELEM_INA219_ADDRESS,  "INA219",       init_ina219,   query_ina219   },
+  { TELEM_INA219_ALT_ADDR(TELEM_INA219_ADDRESS), "INA219", init_ina219, query_ina219 },
 #endif
 #if ENV_INCLUDE_INA260
   { TELEM_INA260_ADDRESS,  "INA260",       init_ina260,   query_ina260   },
@@ -640,6 +611,7 @@ static const SensorDef SENSOR_TABLE[] = {
 };
 
 #undef TELEM_BOSCH_ALT_ADDR
+#undef TELEM_INA219_ALT_ADDR
 
 static const size_t SENSOR_TABLE_SIZE = (sizeof(SENSOR_TABLE) / sizeof(SENSOR_TABLE[0])) - 1;
 
@@ -652,11 +624,7 @@ static const size_t SENSOR_TABLE_SIZE = (sizeof(SENSOR_TABLE) / sizeof(SENSOR_TA
 
 bool EnvironmentSensorManager::begin() {
   #if ENV_INCLUDE_GPS
-  #ifdef RAK_WISBLOCK_GPS
-  rakGPSInit();
-  #else
   initBasicGPS();
-  #endif
   #endif
 
   #if ENV_PIN_SDA && ENV_PIN_SCL
@@ -712,117 +680,47 @@ bool EnvironmentSensorManager::begin() {
 bool EnvironmentSensorManager::querySensors(uint8_t requester_permissions, CayenneLPP& telemetry) {
   next_available_channel = TELEM_CHANNEL_SELF + 1;
 
-  bool share_location = gps_active;
-  #if ENV_INCLUDE_GPS && defined(GPS_GUARD)
-  share_location = share_location && _have_trusted_fix;   // never report an unverified position
-  #endif
-  if (requester_permissions & TELEM_PERM_LOCATION && share_location) {
+  #if ENV_INCLUDE_GPS
+  if (requester_permissions & TELEM_PERM_LOCATION && _location->isGpsOn()) {
     telemetry.addGPS(TELEM_CHANNEL_SELF, node_lat, node_lon, node_altitude);
   }
+  #endif
 
   if (requester_permissions & TELEM_PERM_ENVIRONMENT) {
     for (int i = 0; i < _active_sensor_count; i++) {
       _active_sensors[i].query(next_available_channel, _active_sensors[i].sub_channel, telemetry);
       next_available_channel++;
     }
-    #if ENV_INCLUDE_GPS && defined(GPS_GUARD)
-    if (gps_detected) {  // number of GPS spoofing events since boot
-      telemetry.addGenericSensor(next_available_channel++, _spoof_events);
-    }
-    if (_time_alert) {   // GPS-vs-clock offset in hours on its own channel while the alert is active
-      telemetry.addAnalogInput(next_available_channel++, _time_disagree_offset / 3600.0f);
-    }
-    #endif
   }
 
   return true;
 }
 
-#if ENV_INCLUDE_GPS
-#ifdef GPS_GUARD
-static uint32_t gpsMinEpoch();
-static uint32_t gpsMaxEpoch();
-#endif
-
-static const char* const GPS_SETTING_NAMES[] = {
-  "gps",
-#ifdef GPS_DUTY_CYCLE
-  "gps_cycle",    // minutes between GPS power-ups, 0 = always on
-  "gps_ontime",   // max seconds powered per cycle
-#endif
-#ifdef GPS_GUARD
-  "gps_fence",    // metres from gps_ref, 0 = off
-  "gps_ref",      // reference position "lat,lon", 0,0 = none
-  "gps_guard",    // read-only status
-  "gps_spoof",    // read-only spoofing history; keep last and <= 24 chars (companion custom vars frame)
-#endif
-};
-static const int GPS_SETTING_COUNT = sizeof(GPS_SETTING_NAMES) / sizeof(GPS_SETTING_NAMES[0]);
-#endif
 
 int EnvironmentSensorManager::getNumSettings() const {
   int settings = 0;
   #if ENV_INCLUDE_GPS
-    if (gps_detected) settings += GPS_SETTING_COUNT;  // only show GPS settings if GPS is detected
+    if (gps_detected) settings += 1;  // GPS enablement
   #endif
   return settings;
 }
 
 const char* EnvironmentSensorManager::getSettingName(int i) const {
+  int settings = 0;
   #if ENV_INCLUDE_GPS
-    if (gps_detected && i >= 0 && i < GPS_SETTING_COUNT) {
-      return GPS_SETTING_NAMES[i];
+    if (gps_detected && i == settings++) {
+      return "gps";
     }
   #endif
   return NULL;
 }
 
 const char* EnvironmentSensorManager::getSettingValue(int i) const {
+  int settings = 0;
   #if ENV_INCLUDE_GPS
-    const char* name = getSettingName(i);
-    if (name == NULL) return NULL;
-    if (strcmp(name, "gps") == 0) {
-      return gps_active ? "1" : "0";
+    if (gps_detected && i == settings++) {
+      return _location->isGpsOn() ? "1" : "0";
     }
-    #ifdef GPS_DUTY_CYCLE
-    if (strcmp(name, "gps_cycle") == 0) {
-      snprintf(_setting_buf, sizeof(_setting_buf), "%lu", (unsigned long)(_gps_cycle_sec / 60));
-      return _setting_buf;
-    }
-    if (strcmp(name, "gps_ontime") == 0) {
-      snprintf(_setting_buf, sizeof(_setting_buf), "%lu", (unsigned long)_gps_ontime_sec);
-      return _setting_buf;
-    }
-    #endif
-    #ifdef GPS_GUARD
-    if (strcmp(name, "gps_fence") == 0) {
-      snprintf(_setting_buf, sizeof(_setting_buf), "%lu", (unsigned long)_gps_fence_m);
-      return _setting_buf;
-    }
-    if (strcmp(name, "gps_ref") == 0) {
-      // ";" not ",": companion custom vars are sent as "name:value,name:value"
-      snprintf(_setting_buf, sizeof(_setting_buf), "%.5f;%.5f", _gps_ref_lat, _gps_ref_lon);
-      return _setting_buf;
-    }
-    if (strcmp(name, "gps_spoof") == 0) {
-      if (_spoof_events == 0) {
-        snprintf(_setting_buf, 25, "0x");
-      } else {
-        snprintf(_setting_buf, 25, "%ux %lum %s", _spoof_events,
-                 (unsigned long)((millis() - _last_spoof_ms) / 60000), _last_spoof_reason);
-      }
-      return _setting_buf;
-    }
-    if (strcmp(name, "gps_guard") == 0) {
-      if (_time_alert) {
-        snprintf(_setting_buf, sizeof(_setting_buf), "%s time %s ALERT gps-clk %+lds %lum", _fix_status, _time_status,
-                 _time_disagree_offset, (unsigned long)((millis() - _time_disagree_since_ms) / 60000));
-      } else {
-        snprintf(_setting_buf, sizeof(_setting_buf), "%s time %s", _fix_status, _time_status);
-      }
-      return _setting_buf;
-    }
-    #endif
   #endif
   return NULL;
 }
@@ -842,470 +740,22 @@ bool EnvironmentSensorManager::setSettingValue(const char* name, const char* val
     gps_update_interval_sec = interval_seconds > 0 ? interval_seconds : 1;
     return true;
   }
-  #ifdef GPS_DUTY_CYCLE
-  if (strcmp(name, "gps_cycle") == 0) {
-    _gps_cycle_sec = (uint32_t)atoi(value) * 60;
-    if (gps_active && !_gps_powered) gpsPowerOn();   // start a fresh window now
-    return true;
-  }
-  if (strcmp(name, "gps_ontime") == 0) {
-    uint32_t secs = atoi(value);
-    _gps_ontime_sec = secs < 30 ? 30 : secs;
-    return true;
-  }
-  #endif
-  #ifdef GPS_GUARD
-  if (strcmp(name, "gps_time_reset") == 0) {   // clock was set manually: drop the GPS drift anchor
-    _time_accepted = false;
-    _time_disagree = false;
-    _time_alert = false;
-    return true;
-  }
-  if (strcmp(name, "gps_time_accept") == 0) {  // operator confirms the alerted GPS time is right: apply it now
-    if (!_time_alert) return false;            // only resolves an active alert; otherwise use 'time force'
-    if (!_have_trusted_fix || (millis() - _last_trusted_ms) > 5000) return false;
-    long offset;
-    if (!_location->getClockOffset(offset)) return false;
-    if (labs(offset - _time_disagree_offset) > GPS_GUARD_ALERT_TOLERANCE) return false;  // not the offset that was alerted
-    uint32_t gps_time = _location->getTimestamp();
-    if (gps_time < gpsMinEpoch() || gps_time > gpsMaxEpoch()) return false;
-    if (!_location->applyTimeNow()) return false;
-    _time_accepted = true;
-    _last_time_accept_ms = millis();
-    _time_disagree = false;
-    _time_alert = false;
-    snprintf(_time_status, sizeof(_time_status), "ok manual");
-    return true;
-  }
-  if (strcmp(name, "gps_fence") == 0) {
-    _gps_fence_m = atoi(value);
-    return true;
-  }
-  if (strcmp(name, "gps_ref") == 0) {
-    char* end;
-    double lat = strtod(value, &end);
-    if (*end != ',' && *end != ';') return false;   // accept "lat,lon" and "lat;lon"
-    double lon = strtod(end + 1, NULL);
-    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
-    _gps_ref_lat = lat;
-    _gps_ref_lon = lon;
-    return true;
-  }
-  #endif
   #endif
   return false;  // not supported
 }
 
 #if ENV_INCLUDE_GPS
-#ifdef GPS_BAUD_AUTODETECT
-// Returns true if a complete NMEA sentence with a valid checksum arrives within timeout_ms.
-static bool gpsSeesValidNMEA(uint32_t timeout_ms) {
-  char line[100];
-  int len = -1;  // -1 = waiting for '$'
-  unsigned long start = millis();
-  while (millis() - start < timeout_ms) {
-    if (!Serial1.available()) { delay(2); continue; }
-    char c = Serial1.read();
-    if (c == '$') { len = 0; continue; }
-    if (len < 0) continue;
-    if (c == '\r' || c == '\n') {
-      line[len] = 0;
-      char* star = strchr(line, '*');
-      if (star && strlen(star) >= 3) {
-        uint8_t sum = 0;
-        for (char* p = line; p < star; p++) sum ^= (uint8_t)*p;
-        if (sum == (uint8_t)strtoul(star + 1, NULL, 16)) return true;
-      }
-      len = -1;
-    } else if (len < (int)sizeof(line) - 1) {
-      line[len++] = c;
-    } else {
-      len = -1;  // too long, not NMEA at this baud
-    }
-  }
-  return false;
-}
-
-// Probe common GNSS baud rates; leaves Serial1 open at the detected (or default) rate.
-static uint32_t detectGPSBaud() {
-  static const uint32_t bauds[] = { 9600, 115200, 38400, 57600, 19200, 4800 };
-  for (uint32_t baud : bauds) {
-    Serial1.end();
-    Serial1.begin(baud);
-    while (Serial1.available()) Serial1.read();
-    if (gpsSeesValidNMEA(2500)) return baud;
-  }
-  Serial1.end();
-  Serial1.begin(9600);
-  return 0;
-}
-#endif
-
 void EnvironmentSensorManager::initBasicGPS() {
-
-  #ifdef GPS_GUARD
-  _location->setTimeGuard(timeGuardCallback, this);
-  #endif
-
-  Serial1.setPins(PIN_GPS_TX, PIN_GPS_RX);
-
-  #ifdef GPS_BAUD_RATE
-  Serial1.begin(GPS_BAUD_RATE);
-  #else
-  Serial1.begin(9600);
-  #endif
-
-  // Try to detect if GPS is physically connected to determine if we should expose the setting
-  _location->begin();
-  _location->reset();
-
   #ifndef PIN_GPS_EN
     MESH_DEBUG_PRINTLN("No GPS wake/reset pin found for this board. Continuing on...");
   #endif
 
-  // Give the GPS time to power up and emit its first NMEA sentence. Cold-start
-  // modules can take several seconds, so poll for up to ~5s instead of checking
-  // once after a fixed 1s delay -- returning as soon as any data appears, so
-  // fast modules add no boot delay (issue #2258).
-#ifdef ENV_SKIP_GPS_DETECT
-  gps_detected = true;
-#else
-  gps_detected = false;
-  for (int i = 0; i < 20 && !gps_detected; i++) {
-    delay(250);
-    gps_detected = (Serial1.available() > 0);
-  }
-#endif
-
-  if (gps_detected) {
-    MESH_DEBUG_PRINTLN("GPS detected");
-    #ifdef GPS_BAUD_AUTODETECT
-    uint32_t baud = detectGPSBaud();
-    if (baud) {
-      MESH_DEBUG_PRINTLN("GPS baud rate: %lu", (unsigned long)baud);
-    } else {
-      MESH_DEBUG_PRINTLN("GPS baud rate not detected, using 9600");
-    }
-    #endif
-    #ifdef PERSISTANT_GPS
-      gps_active = true;
-      return;
-    #endif
-  } else {
-    MESH_DEBUG_PRINTLN("No GPS detected");
-  }
-  _location->stop();
-  gps_active = false; //Set GPS visibility off until setting is changed
+  gps_detected = _location->autoDetect();
+  MESH_DEBUG_PRINTLN("%s", gps_detected ? "GPS detected" : "No GPS detected");
 }
-
-// gps code for rak might be moved to MicroNMEALoactionProvider
-// or make a new location provider ...
-#ifdef RAK_WISBLOCK_GPS
-void EnvironmentSensorManager::rakGPSInit(){
-
-  Serial1.setPins(PIN_GPS_TX, PIN_GPS_RX);
-
-  #ifdef GPS_BAUD_RATE
-  Serial1.begin(GPS_BAUD_RATE);
-  #else
-  Serial1.begin(9600);
-  #endif
-
-  //search for the correct IO standby pin depending on socket used
-  if(gpsIsAwake(WB_IO2)){
-  }
-  else if(gpsIsAwake(WB_IO4)){
-  }
-  else if(gpsIsAwake(WB_IO5)){
-  }
-  else{
-    MESH_DEBUG_PRINTLN("No GPS found");
-    gps_active = false;
-    gps_detected = false;
-    Serial1.end();
-    return;
-  }
-
-  #ifndef FORCE_GPS_ALIVE // for use with repeaters, until GPS toggle is implimented
-  //Now that GPS is found and set up, set to sleep for initial state
-  stop_gps();
-  #endif
-}
-
-bool EnvironmentSensorManager::gpsIsAwake(uint8_t ioPin){
-
-  #if defined(ETHERNET_ENABLED) && defined(RAK_BOARD)
-    if (ioPin == WB_IO2) {
-      // WB_IO2 powers the Ethernet module on RAK baseboards.
-      return false;
-    }
-  #endif
-
-  #ifndef RAK_3401
-  //set initial waking state
-  pinMode(ioPin,OUTPUT);
-  digitalWrite(ioPin,LOW);
-  delay(500);
-  digitalWrite(ioPin,HIGH);
-  #endif
-
-  // give gps time to power up
-  delay(500);
-
-  //Try to init RAK12500 on I2C
-  if (ublox_GNSS.begin(Wire) == true){
-    MESH_DEBUG_PRINTLN("RAK12500 GPS init correctly with pin %i",ioPin);
-    ublox_GNSS.setI2COutput(COM_TYPE_UBX);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_GPS);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_GALILEO);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_GLONASS);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_SBAS);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_BEIDOU);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_IMES);
-    ublox_GNSS.enableGNSS(true, SFE_UBLOX_GNSS_ID_QZSS);
-    ublox_GNSS.setMeasurementRate(1000);
-    ublox_GNSS.saveConfigSelective(VAL_CFG_SUBSEC_IOPORT);
-    gpsResetPin = ioPin;
-    i2cGPSFlag = true;
-    gps_active = true;
-    gps_detected = true;
-
-    _location = &RAK12500_provider;
-    return true;
-  } else if (Serial1.available()) {
-    MESH_DEBUG_PRINTLN("Serial GPS init correctly and is turned on");
-#ifdef PIN_GPS_EN
-    if(PIN_GPS_EN){
-      gpsResetPin = PIN_GPS_EN;
-    }
-#endif
-    serialGPSFlag = true;
-    gps_active = true;
-    gps_detected = true;
-    return true;
-  }
-
-  #ifndef RAK_3401
-  pinMode(ioPin, INPUT);
-  #endif
-  MESH_DEBUG_PRINTLN("GPS did not init with this IO pin... try the next");
-  return false;
-}
-#endif
-
-#ifdef GPS_GUARD
-// Plausible GPS time window: not before this firmware was built, at most 10 years after.
-static uint32_t gpsMinEpoch() {
-  static const uint32_t min_epoch = DateTime(__DATE__, __TIME__).unixtime() - 86400;
-  return min_epoch;
-}
-static uint32_t gpsMaxEpoch() { return gpsMinEpoch() + 10UL * 365 * 86400; }
-
-static double gpsDistanceM(double lat1, double lon1, double lat2, double lon2) {
-  const double R = 6371000.0, D2R = 0.017453292519943295;
-  double dlat = (lat2 - lat1) * D2R, dlon = (lon2 - lon1) * D2R;
-  double a = sin(dlat / 2) * sin(dlat / 2) +
-             cos(lat1 * D2R) * cos(lat2 * D2R) * sin(dlon / 2) * sin(dlon / 2);
-  return 2 * R * atan2(sqrt(a), sqrt(1 - a));
-}
-
-// Called once per second while the GPS is powered: decides whether the current fix is trustworthy.
-void EnvironmentSensorManager::evaluateGpsFix() {
-  if (!_location->isValid()) {
-    _stable_count = 0;
-    snprintf(_fix_status, sizeof(_fix_status), "no fix %ldsat", _location->satellitesCount());
-    return;
-  }
-  double lat = ((double)_location->getLatitude()) / 1000000.;
-  double lon = ((double)_location->getLongitude()) / 1000000.;
-  long sats = _location->satellitesCount();
-  uint8_t hdop = _location->getHDOP();
-  unsigned long now = millis();
-
-  const char* why = NULL;
-  double dist = 0;
-  if (sats < GPS_GUARD_MIN_SATS) {
-    why = "sats";
-  } else if (hdop == 255 || hdop > GPS_GUARD_MAX_HDOP10) {
-    why = "hdop";
-  }
-  #if defined(GPS_GUARD_LAT_MIN) && defined(GPS_GUARD_LAT_MAX) && defined(GPS_GUARD_LON_MIN) && defined(GPS_GUARD_LON_MAX)
-  else if (lat < GPS_GUARD_LAT_MIN || lat > GPS_GUARD_LAT_MAX || lon < GPS_GUARD_LON_MIN || lon > GPS_GUARD_LON_MAX) {
-    why = "region";
-  }
-  #endif
-  else if (_gps_fence_m > 0 && (_gps_ref_lat != 0 || _gps_ref_lon != 0) &&
-           (dist = gpsDistanceM(_gps_ref_lat, _gps_ref_lon, lat, lon)) > _gps_fence_m) {
-    why = "fence";
-  } else if (_have_trusted_fix) {
-    dist = gpsDistanceM(_last_trusted_lat, _last_trusted_lon, lat, lon);
-    double secs = (now - _last_trusted_ms) / 1000.0;
-    if (secs < 1) secs = 1;
-    if (dist / secs > GPS_GUARD_MAX_SPEED_KMH / 3.6) why = "jump";
-  }
-
-  if (why) {
-    _stable_count = 0;
-    if (dist > 0) {
-      snprintf(_fix_status, sizeof(_fix_status), "rej %s %.1fkm", why, dist / 1000.0);
-    } else {
-      snprintf(_fix_status, sizeof(_fix_status), "rej %s", why);
-    }
-    MESH_DEBUG_PRINTLN("GPS fix rejected (%s): %f,%f sats=%ld hdop=%u", why, lat, lon, sats, hdop);
-    if (strcmp(why, "region") == 0 || strcmp(why, "fence") == 0 || strcmp(why, "jump") == 0) {
-      noteSpoof(why);   // "sats"/"hdop" are poor reception, not spoofing
-    }
-    return;
-  }
-
-  // Require several consecutive, mutually consistent fixes.
-  if (_stable_count > 0 && gpsDistanceM(_cand_lat, _cand_lon, lat, lon) > GPS_GUARD_STABLE_M) {
-    _stable_count = 0;
-  }
-  _cand_lat = lat;
-  _cand_lon = lon;
-  if (_stable_count < 255) _stable_count++;
-  if (_stable_count < GPS_GUARD_STABLE_FIXES) {
-    snprintf(_fix_status, sizeof(_fix_status), "settle %u/%u", _stable_count, GPS_GUARD_STABLE_FIXES);
-    return;
-  }
-
-  node_lat = lat;
-  node_lon = lon;
-  node_altitude = ((double)_location->getAltitude()) / 1000.0;
-  if (!_fix_trusted) {
-    _fix_trusted = true;
-    _fix_trusted_ms = now;
-    MESH_DEBUG_PRINTLN("GPS fix trusted: %f,%f sats=%ld hdop=%u", lat, lon, sats, hdop);
-  }
-  _have_trusted_fix = true;
-  _last_trusted_ms = now;
-  _last_trusted_lat = lat;
-  _last_trusted_lon = lon;
-  snprintf(_fix_status, sizeof(_fix_status), "ok %ldsat", sats);
-}
-
-// A trusted fix whose time keeps disagreeing with the clock by the same offset is either
-// a sustained spoof or a wrong clock; either way the operator should look at it.
-void EnvironmentSensorManager::trackTimeDisagreement(long offset) {
-  unsigned long now = millis();
-  if (!_time_disagree || labs(offset - _time_disagree_offset) > GPS_GUARD_ALERT_TOLERANCE) {
-    _time_disagree = true;
-    _time_disagree_offset = offset;
-    _time_disagree_since_ms = now;
-    _time_alert = false;
-    return;
-  }
-  if (!_time_alert && (now - _time_disagree_since_ms) >= GPS_GUARD_ALERT_MIN * 60000UL) {
-    _time_alert = true;
-    MESH_DEBUG_PRINTLN("GPS TIME ALERT: GPS differs from clock by %lds for %u min", offset, GPS_GUARD_ALERT_MIN);
-  }
-}
-
-void EnvironmentSensorManager::noteSpoof(const char* reason) {
-  unsigned long now = millis();
-  if (_spoof_events == 0 || (now - _last_spoof_ms) > GPS_GUARD_SPOOF_GAP_MS) {
-    if (_spoof_events < 65535) _spoof_events++;
-    MESH_DEBUG_PRINTLN("GPS spoofing event #%u (%s)", _spoof_events, reason);
-  }
-  _last_spoof_ms = now;
-  _last_spoof_reason = reason;
-}
-
-bool EnvironmentSensorManager::timeGuardCallback(void* ctx, uint32_t gps_time, uint32_t clock_time) {
-  return ((EnvironmentSensorManager*)ctx)->checkGpsTime(gps_time, clock_time);
-}
-
-// GPS time is only written to the clock while a trusted fix is current, it is not
-// older than this firmware, and (once the clock is valid) it only nudges the clock.
-bool EnvironmentSensorManager::checkGpsTime(uint32_t gps_time, uint32_t clock_time) {
-  const uint32_t min_epoch = gpsMinEpoch();
-  const uint32_t max_epoch = gpsMaxEpoch();
-
-  const char* why = NULL;
-  long step = 0;
-  if (!_have_trusted_fix || (millis() - _last_trusted_ms) > 5000) {
-    why = "nofix";
-  } else if (gps_time < min_epoch || gps_time > max_epoch) {
-    why = "range";
-  } else if (clock_time >= min_epoch) {   // clock already holds a plausible time
-    step = (long)gps_time - (long)clock_time;
-    long limit = GPS_GUARD_TIME_MAX_STEP;
-    if (_time_accepted) {
-      // After the first accepted sync only allow corrections the size of real clock
-      // drift, so a spoofer cannot walk the clock away in many small steps.
-      uint32_t elapsed_s = (millis() - _last_time_accept_ms) / 1000;
-      limit = GPS_GUARD_TIME_DRIFT_BASE + (long)((uint64_t)elapsed_s * GPS_GUARD_TIME_DRIFT_PPM / 1000000UL);
-      if (limit > GPS_GUARD_TIME_MAX_STEP) limit = GPS_GUARD_TIME_MAX_STEP;
-    }
-    if (labs(step) > limit) why = "step";
-  }
-
-  if (why) {
-    if (step != 0) {
-      snprintf(_time_status, sizeof(_time_status), "rej %s %lds", why, step);
-      trackTimeDisagreement(step);
-    } else {
-      snprintf(_time_status, sizeof(_time_status), "rej %s", why);
-    }
-    if (strcmp(why, "step") == 0 || strcmp(why, "range") == 0) {
-      noteSpoof("time");   // a trusted fix carrying an implausible time
-    }
-    return false;
-  }
-  snprintf(_time_status, sizeof(_time_status), "ok %+lds", (long)gps_time - (long)clock_time);
-  _time_disagree = false;
-  _time_alert = false;
-  // Every accepted sync anchors the drift budget (fail closed: no walking the clock in
-  // repeated MAX_STEP jumps). If a spoofed time was anchored while the clock was invalid,
-  // the operator recovers with 'time force', which resets the anchor (gps_time_reset).
-  _time_accepted = true;
-  _last_time_accept_ms = millis();
-  return true;
-}
-#endif
-
-#ifdef GPS_DUTY_CYCLE
-void EnvironmentSensorManager::gpsPowerOn() {
-  if (!_gps_powered) {
-    _location->begin();
-    _location->reset();
-    _gps_powered = true;
-  }
-  _location->clearFix();     // never reuse a fix parsed in a previous window
-  _gps_window_start = millis();
-  #ifdef GPS_GUARD
-  _fix_trusted = false;
-  _stable_count = 0;
-  #endif
-  MESH_DEBUG_PRINTLN("GPS power on");
-}
-
-void EnvironmentSensorManager::gpsPowerOff() {
-  if (_gps_powered) {
-    _location->stop();
-    _gps_powered = false;
-    MESH_DEBUG_PRINTLN("GPS power off");
-  }
-}
-#endif
 
 void EnvironmentSensorManager::start_gps() {
-  gps_active = true;
-  #ifdef RAK_WISBLOCK_GPS
-    #ifndef RAK_3401
-    pinMode(gpsResetPin, OUTPUT);
-    digitalWrite(gpsResetPin, HIGH);
-    #endif
-    return;
-  #endif
-
-  #ifdef GPS_DUTY_CYCLE
-  gpsPowerOn();
-  #else
-  _location->begin();
-  _location->reset();
-  #endif
+  _location->setGpsOn(true);
 
 #ifndef PIN_GPS_EN
   MESH_DEBUG_PRINTLN("Start GPS is N/A on this board. Actual GPS state unchanged");
@@ -1313,24 +763,11 @@ void EnvironmentSensorManager::start_gps() {
 }
 
 void EnvironmentSensorManager::stop_gps() {
-  gps_active = false;
-  #ifdef RAK_WISBLOCK_GPS
-    #ifndef RAK_3401 // rak3401 shouldn't turn off WB_IO2 as it powers the PA
-    pinMode(gpsResetPin, OUTPUT);
-    digitalWrite(gpsResetPin, LOW);
-    #endif
-    return;
-  #endif
+  _location->setGpsOn(false);
 
-  #ifdef GPS_DUTY_CYCLE
-  gpsPowerOff();
-  #else
-  _location->stop();
-  #endif
-
-  #ifndef PIN_GPS_EN
+#ifndef PIN_GPS_EN
   MESH_DEBUG_PRINTLN("Stop GPS is N/A on this board. Actual GPS state unchanged");
-  #endif
+#endif
 }
 #endif // ENV_INCLUDE_GPS
 
@@ -1339,62 +776,18 @@ void EnvironmentSensorManager::loop() {
 
   #if ENV_INCLUDE_GPS
   static unsigned long next_gps_update = 0;
-  if (gps_active) {
-    _location->loop();
-  }
+  _location->loop();
   if ((long)(millis() - next_gps_update) > 0) {
 
-    if(gps_active){
-    #ifdef RAK_WISBLOCK_GPS
-    if ((i2cGPSFlag || serialGPSFlag) && _location->isValid()) {
+    if (_location->isGpsOn() && _location->hasValidFix()) {
       node_lat = ((double)_location->getLatitude())/1000000.;
       node_lon = ((double)_location->getLongitude())/1000000.;
       MESH_DEBUG_PRINTLN("lat %f lon %f", node_lat, node_lon);
       node_altitude = ((double)_location->getAltitude()) / 1000.0;
       MESH_DEBUG_PRINTLN("lat %f lon %f alt %f", node_lat, node_lon, node_altitude);
-    }
-    #elif defined(GPS_GUARD)
-    // position is updated by evaluateGpsFix() below, only from trusted fixes
-    #else
-    if (_location->isValid()) {
-      node_lat = ((double)_location->getLatitude())/1000000.;
-      node_lon = ((double)_location->getLongitude())/1000000.;
-      MESH_DEBUG_PRINTLN("lat %f lon %f", node_lat, node_lon);
-      node_altitude = ((double)_location->getAltitude()) / 1000.0;
-      MESH_DEBUG_PRINTLN("lat %f lon %f alt %f", node_lat, node_lon, node_altitude);
-    }
-    #endif
     }
     next_gps_update = millis() + (gps_update_interval_sec * 1000);
   }
-
-  #if defined(GPS_GUARD) && !defined(RAK_WISBLOCK_GPS)
-  static unsigned long next_guard_check = 0;
-  if (gps_active && _location->isEnabled() && (long)(millis() - next_guard_check) > 0) {
-    next_guard_check = millis() + 1000;
-    evaluateGpsFix();
-  }
-  #endif
-
-  #ifdef GPS_DUTY_CYCLE
-  if (gps_active && _gps_cycle_sec > 0) {
-    unsigned long now = millis();
-    if (_gps_powered) {
-      uint32_t on_secs = (now - _gps_window_start) / 1000;
-      #ifdef GPS_GUARD
-      // done once a trusted fix exists and the time sync had a chance to run
-      bool done = _fix_trusted && (!_location->waitingTimeSync() || (now - _fix_trusted_ms) > 20000);
-      #else
-      bool done = _location->isValid() && !_location->waitingTimeSync();
-      #endif
-      if (done || on_secs >= _gps_ontime_sec) gpsPowerOff();
-    } else if ((long)(now - (_gps_window_start + _gps_cycle_sec * 1000UL)) >= 0) {
-      gpsPowerOn();
-    }
-  } else if (gps_active && !_gps_powered) {
-    gpsPowerOn();   // cycling disabled: keep the GPS on
-  }
-  #endif
   #endif
   #if ENV_INCLUDE_BME680_BSEC
   if (bsec_active && bsec_iaq.run()) {

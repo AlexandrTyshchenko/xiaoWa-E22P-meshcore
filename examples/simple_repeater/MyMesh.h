@@ -159,10 +159,14 @@ protected:
 
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
-    sensors.setSettingValue("gps", _prefs.gps_enabled?"1":"0");
-    char ref[32];
-    snprintf(ref, sizeof(ref), "%.6f,%.6f", _prefs.node_lat, _prefs.node_lon);
-    sensors.setSettingValue("gps_ref", ref);   // anti-spoofing reference (ignored if unsupported)
+    if (sensors.getSettingByKey("gps_interval") != nullptr) {
+      // gps_interval was introduced only for EnvironmentSensorManager
+      // and has little interest ... kept only as a legacy
+      char interval[11];
+      snprintf(interval, sizeof(interval), "%lu", (unsigned long)_prefs.gps_interval);
+      sensors.setSettingValue("gps_interval", interval);
+    }
+    _prefs.getGpsPrefs()->apply(sensors);
   }
 #endif
 

@@ -3,23 +3,15 @@
 #include <MeshCore.h>
 #include <Arduino.h>
 #include <helpers/NRF52Board.h>
+#include <helpers/sensors/EnvironmentSensorManager.h>
 
 #define  PIN_VBAT_READ 17
 #ifndef ADC_MULTIPLIER
 #define  ADC_MULTIPLIER   (1.815f) // dependent on voltage divider resistors. TODO: more accurate battery tracking
 #endif
 
-#ifdef TELEM_INA3221_BAT_CH
-  // implemented in EnvironmentSensorManager.cpp; false until the INA3221 is initialised
-  bool ina3221_read_battery(uint16_t* millivolts, float* amps);
-  #ifndef TELEM_INA3221_CHARGE_THRESHOLD_A
-    #define TELEM_INA3221_CHARGE_THRESHOLD_A 0.005f  // ignore noise below 5 mA
-  #endif
-#endif
-
 class PromicroBoard : public NRF52BoardDCDC {
 protected:
-  uint8_t btn_prev_state;
   float adc_mult = ADC_MULTIPLIER;
 
 public:
@@ -29,9 +21,9 @@ public:
   #define BATTERY_SAMPLES 8
 
   uint16_t getBattMilliVolts() override {
-  #ifdef TELEM_INA3221_BAT_CH
+  #if ENV_INCLUDE_INA3221 && defined(TELEM_INA3221_BAT_CH)
     uint16_t mv;
-    if (ina3221_read_battery(&mv, NULL)) return mv;
+    if (ina3221ReadBattery(&mv, NULL)) return mv;   // falls back to the ADC until the INA3221 is up
   #endif
     analogReadResolution(12);
   #ifdef BATT_ADC_SAMPLE_TIME_US
@@ -62,29 +54,11 @@ public:
     }
   }
 
-#ifdef TELEM_INA3221_BAT_CH
-  bool isChargerActive() override {
-    float amps;
-    if (!ina3221_read_battery(NULL, &amps)) return false;
-  #ifdef TELEM_INA3221_CHARGING_INVERT
-    amps = -amps;
-  #endif
-    return amps > TELEM_INA3221_CHARGE_THRESHOLD_A;
-  }
+#if ENV_INCLUDE_INA3221 && defined(TELEM_INA3221_BAT_CH)
+  bool isChargerActive() override { return ina3221BatteryCharging(); }
 #endif
 
   const char* getManufacturerName() const override {
     return "ProMicro DIY";
-  }
-
-  int buttonStateChanged() {
-    #ifdef BUTTON_PIN
-      uint8_t v = digitalRead(BUTTON_PIN);
-      if (v != btn_prev_state) {
-        btn_prev_state = v;
-        return (v == LOW) ? 1 : -1;
-      }
-    #endif
-      return 0;
   }
 };

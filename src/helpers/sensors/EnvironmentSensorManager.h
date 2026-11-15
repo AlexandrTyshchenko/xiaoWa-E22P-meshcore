@@ -4,52 +4,27 @@
 #include <helpers/SensorManager.h>
 #include <helpers/sensors/LocationProvider.h>
 
-#ifdef GPS_GUARD
-  #ifndef GPS_GUARD_MIN_SATS
-    #define GPS_GUARD_MIN_SATS      4
+#if ENV_INCLUDE_INA3221 && defined(TELEM_INA3221_BAT_CH)
+  #if TELEM_INA3221_BAT_CH < 1 || TELEM_INA3221_BAT_CH > 3
+    #error "TELEM_INA3221_BAT_CH must be 1, 2 or 3"
   #endif
-  #ifndef GPS_GUARD_MAX_HDOP10
-    #define GPS_GUARD_MAX_HDOP10    40      // HDOP 4.0
+  #ifndef TELEM_INA3221_CHARGE_THRESHOLD_A
+    #define TELEM_INA3221_CHARGE_THRESHOLD_A 0.005f  // ignore current noise below 5 mA
   #endif
-  #ifndef GPS_GUARD_FENCE_M
-    #define GPS_GUARD_FENCE_M       1000    // max distance from the reference position
-  #endif
-  #ifndef GPS_GUARD_STABLE_FIXES
-    #define GPS_GUARD_STABLE_FIXES  5       // consecutive consistent fixes before trusting
-  #endif
-  #ifndef GPS_GUARD_STABLE_M
-    #define GPS_GUARD_STABLE_M      100
-  #endif
-  #ifndef GPS_GUARD_MAX_SPEED_KMH
-    #define GPS_GUARD_MAX_SPEED_KMH 250     // jump limit relative to the last trusted fix
-  #endif
-  #ifndef GPS_GUARD_TIME_MAX_STEP
-    #define GPS_GUARD_TIME_MAX_STEP 600     // max GPS-vs-clock correction (s) once the clock is valid
-  #endif
-  #ifndef GPS_GUARD_TIME_DRIFT_BASE
-    #define GPS_GUARD_TIME_DRIFT_BASE 5     // after the first sync: fixed allowance (s) ...
-  #endif
-  #ifndef GPS_GUARD_TIME_DRIFT_PPM
-    #define GPS_GUARD_TIME_DRIFT_PPM 100    // ... plus clock drift since that sync (~8.6 s/day)
-  #endif
-  #ifndef GPS_GUARD_SPOOF_GAP_MS
-    #define GPS_GUARD_SPOOF_GAP_MS    60000   // rejections less than this apart belong to one spoofing event
-  #endif
-  #ifndef GPS_GUARD_ALERT_MIN
-    #define GPS_GUARD_ALERT_MIN     60      // alert after GPS disagrees with the clock this long ...
-  #endif
-  #ifndef GPS_GUARD_ALERT_TOLERANCE
-    #define GPS_GUARD_ALERT_TOLERANCE 60    // ... by an offset that stays within this many seconds
-  #endif
-#endif
+  // Battery monitored on INA3221 channel TELEM_INA3221_BAT_CH (1..3), for boards that take
+  // their battery voltage / charging state from it. Returns false until the INA3221 is found.
+  bool ina3221ReadBattery(uint16_t* millivolts, float* amps);
 
-#ifdef GPS_DUTY_CYCLE
-  #ifndef GPS_CYCLE_MIN
-    #define GPS_CYCLE_MIN   30
+  // Positive battery-channel current means charging, unless the shunt is wired the other
+  // way round (TELEM_INA3221_CHARGING_INVERT).
+  inline bool ina3221BatteryCharging() {
+    float amps;
+    if (!ina3221ReadBattery(NULL, &amps)) return false;
+  #ifdef TELEM_INA3221_CHARGING_INVERT
+    amps = -amps;
   #endif
-  #ifndef GPS_ONTIME_SEC
-    #define GPS_ONTIME_SEC  120
-  #endif
+    return amps > TELEM_INA3221_CHARGE_THRESHOLD_A;
+  }
 #endif
 
 class EnvironmentSensorManager : public SensorManager {
@@ -68,7 +43,6 @@ protected:
   uint8_t      next_available_channel = TELEM_CHANNEL_SELF + 1;
 
   bool     gps_detected = false;
-  bool     gps_active = false;
   uint32_t gps_update_interval_sec = 1;
 
   #if ENV_INCLUDE_GPS
@@ -76,53 +50,6 @@ protected:
   void start_gps();
   void stop_gps();
   void initBasicGPS();
-  mutable char _setting_buf[72];
-
-  #ifdef GPS_GUARD
-  // Anti-spoofing: only plausible, stable fixes update the position, and GPS
-  // time is written to the clock only while such a fix is current.
-  double   _gps_ref_lat = 0, _gps_ref_lon = 0;   // 0,0 = no reference position
-  uint32_t _gps_fence_m = GPS_GUARD_FENCE_M;
-  bool     _fix_trusted = false;          // trusted fix seen in the current power window
-  bool     _have_trusted_fix = false;     // node_lat/lon hold a trusted position
-  unsigned long _fix_trusted_ms = 0;      // first trusted fix in the current window
-  unsigned long _last_trusted_ms = 0;
-  double   _last_trusted_lat = 0, _last_trusted_lon = 0;
-  double   _cand_lat = 0, _cand_lon = 0;
-  uint8_t  _stable_count = 0;
-  char     _fix_status[24] = "no fix";
-  char     _time_status[24] = "-";
-  bool     _time_accepted = false;        // a GPS time sync was accepted since boot
-  unsigned long _last_time_accept_ms = 0;
-  // Sustained, consistent GPS-vs-clock disagreement (rejected syncs) raises an alert.
-  bool     _time_disagree = false;
-  long     _time_disagree_offset = 0;     // GPS minus clock, seconds
-  unsigned long _time_disagree_since_ms = 0;
-  bool     _time_alert = false;
-  // Spoofing history: rejections closer than GPS_GUARD_SPOOF_GAP_MS count as one event.
-  uint16_t _spoof_events = 0;
-  unsigned long _last_spoof_ms = 0;
-  const char* _last_spoof_reason = "";
-  void evaluateGpsFix();
-  bool checkGpsTime(uint32_t gps_time, uint32_t clock_time);
-  void trackTimeDisagreement(long offset);
-  void noteSpoof(const char* reason);
-  static bool timeGuardCallback(void* ctx, uint32_t gps_time, uint32_t clock_time);
-  #endif
-
-  #ifdef GPS_DUTY_CYCLE
-  // GPS is powered for at most _gps_ontime_sec every _gps_cycle_sec (0 = always on).
-  uint32_t _gps_cycle_sec = GPS_CYCLE_MIN * 60;
-  uint32_t _gps_ontime_sec = GPS_ONTIME_SEC;
-  bool     _gps_powered = false;
-  unsigned long _gps_window_start = 0;
-  void gpsPowerOn();
-  void gpsPowerOff();
-  #endif
-  #ifdef RAK_BOARD
-  void rakGPSInit();
-  bool gpsIsAwake(uint8_t ioPin);
-  #endif
   #endif
 
 public:
