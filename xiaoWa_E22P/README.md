@@ -1,6 +1,10 @@
 # xiaoWa E22P — FakeSolar з модулем Ebyte E22P-433M30S
 
-Та сама плата й сенсори, що й FakeSolar (Faketec / ProMicro nRF52840, AHT20, BMP280 або BME280, INA3221 @0x42, PCF8563, GPS 38400, захист GPS від спуфінгу). Інший радіомодуль: **E22P-433M30S** (SX1268 + PA + LNA, до 30 dBm) замість E22-400M22S.
+Та сама плата й сенсори, що й FakeSolar (Faketec / ProMicro nRF52840, AHT20, BMP280 або BME280, INA3221 @0x42, PCF8563, GPS, захист GPS від спуфінгу). Інший радіомодуль: **E22P-433M30S** (SX1268 + PA + LNA, до 30 dBm) замість E22-400M22S.
+
+Основа — FakeSolar `main` `a7e4b929` (MeshCore `dev` `a4c66307`) з усіма її змінами: новий GPS-код (автовизначення швидкості UART, `gps period`, `gps firstfix`, захист від спуфінгу `gps guard` / `gps fence`), CLI `telemetry` і `time force`, телеметрія без висоти барометра (`TELEM_NO_ALTITUDE`, щоб MeshMonitor бачив INA3221). Команди описані в [FakeSolar/README.md](../FakeSolar/README.md).
+
+Після переходу зі старої прошивки E22P (v1.18.0-e22p.1) старі ключі `sensor set gps_*` більше не діють; перевірте `gps` і `gps period` (за замовчуванням 1800 с) і за потреби задайте `gps period 30m`.
 
 Відмінності цієї плати від FakeSolar:
 - INA3221 @0x42: шунти 0.1 / 0.04 / 0.04 Ом (як у FakeSolar), батарея на CH2;
@@ -50,7 +54,7 @@
 
 ## Збірка
 
-Цей репозиторій — MeshCore з історією upstream, змінами FakeSolar (SX1268 у ProMicro, INA3221, GPS, захист від спуфінгу) і комітом xiaoWa E22P зверху. Збірки — у `variants/fakesolar_sx1268/platformio.ini` (секція `[Faketec_E22P]` і три `env:Faketec_E22P_*`), обмеження потужності — `LORA_TX_POWER_MAX` у `src/helpers/radiolib/RadioLibWrappers.cpp`, `src/helpers/CommonRadioPrefs.cpp`, `src/helpers/CommonCLI.cpp`.
+Цей репозиторій — MeshCore з історією upstream, змінами FakeSolar (SX1268 у ProMicro, INA3221, GPS, захист від спуфінгу) і змінами xiaoWa E22P зверху; оновлення основи — `git merge` FakeSolar `main`. Збірки — у `variants/fakesolar_sx1268/platformio.ini` (секція `[Faketec_E22P]` і три `env:Faketec_E22P_*`), обмеження потужності — `LORA_TX_POWER_MAX` у `src/helpers/radiolib/RadioLibWrappers.cpp`, `src/helpers/CommonRadioPrefs.cpp`, `src/helpers/CommonCLI.cpp`.
 
 ```
 pio run -e Faketec_E22P_repeater -e Faketec_E22P_sensor -e Faketec_E22P_companion_radio_ble
